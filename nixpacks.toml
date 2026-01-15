@@ -1,12 +1,15 @@
-# nixpacks.toml
 [phases.setup]
-nixPkgs = ["python38", "python38Packages.pip"]
+nixPkgs = [
+    "python38", 
+    "python38Packages.pip",
+    "poetry"
+]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+    "poetry config virtualenvs.create false",
+    "poetry install --no-interaction --no-ansi --no-root"
+]
 
 [start]
-cmd = "uvicorn main:app --host=0.0.0.0 --port=${PORT:-8000}"
-
-[watch]
-paths = ["main.py", "requirements.txt"]
+cmd = "python -m uvicorn main:app --host=0.0.0.0 --port=${PORT:-8000}"
