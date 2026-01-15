@@ -1,37 +1,24 @@
+# main.py - 简化稳定版
 import os
 import json
-import time
-import hashlib
-from typing import Optional, Dict, Any, Union
-from urllib.parse import urljoin, urlparse, parse_qs, unquote
-
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Query, Form, Body
-from fastapi.responses import (
-    HTMLResponse, 
-    JSONResponse, 
-    Response, 
-    StreamingResponse,
-    RedirectResponse,
-    PlainTextResponse
-)
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from bs4 import BeautifulSoup
-import aiofiles
 import asyncio
+from typing import Optional, Dict, Any
+from urllib.parse import urljoin, urlparse
 
-# 初始化 FastAPI
+from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi.responses import JSONResponse, Response, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+# 初始化应用
 app = FastAPI(
-    title="教务系统代理服务",
-    description="代理访问 http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/",
+    title="教务系统代理",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url=None
 )
 
-# 允许跨域
+# 跨域设置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,155 +29,123 @@ app.add_middleware(
 
 # 配置
 BASE_URL = "http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/"
-TARGET_DOMAIN = "qzjw.bwgl.cn"
-CACHE_DIR = "cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
 
-# 创建静态文件和模板目录
-os.makedirs("static", exist_ok=True)
-os.makedirs("templates", exist_ok=True)
+# 创建HTTP客户端会话
+class HttpClient:
+    _client: Optional[httpx.AsyncClient] = None
+    
+    @classmethod
+    async def get_client(cls):
+        if cls._client is None:
+            cls._client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "keep-alive",
+                },
+                follow_redirects=True,
+                verify=False
+            )
+        return cls._client
+    
+    @classmethod
+    async def close(cls):
+        if cls._client:
+            await cls._client.aclose()
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-# HTTP客户端实例
-_client = None
-
-async def get_http_client():
-    """获取HTTP客户端"""
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=30.0,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1"
-            },
-            follow_redirects=True
-        )
-    return _client
+# 应用生命周期
+@app.on_event("startup")
+async def startup_event():
+    print("🚀 教务代理服务启动")
+    print(f"📡 代理目标: {BASE_URL}")
+    print(f"🔧 Python版本: 3.8")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """应用关闭时清理资源"""
-    global _client
-    if _client:
-        await _client.aclose()
+    await HttpClient.close()
+    print("👋 服务关闭")
 
-# 缓存管理
-def get_cache_key(url: str) -> str:
-    """生成缓存键"""
-    return hashlib.md5(url.encode()).hexdigest()
-
-async def get_cached_response(url: str, expire_seconds: int = 300) -> Optional[Dict]:
-    """获取缓存响应"""
-    cache_key = get_cache_key(url)
-    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-    
-    try:
-        if os.path.exists(cache_file):
-            file_stat = os.stat(cache_file)
-            if time.time() - file_stat.st_mtime < expire_seconds:
-                async with aiofiles.open(cache_file, 'r', encoding='utf-8') as f:
-                    content = await f.read()
-                    return json.loads(content)
-    except Exception as e:
-        print(f"读取缓存失败: {e}")
-    return None
-
-async def save_cached_response(url: str, data: Dict, expire_seconds: int = 300):
-    """保存缓存响应"""
-    cache_key = get_cache_key(url)
-    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-    
-    try:
-        async with aiofiles.open(cache_file, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(data, ensure_ascii=False))
-    except Exception as e:
-        print(f"保存缓存失败: {e}")
-
-# 1. 健康检查接口（Railway 需要）
-@app.get("/health")
-async def health_check():
-    """健康检查接口"""
-    return {"status": "healthy", "timestamp": time.time()}
-
-# 2. 主页
+# 1. 首页
 @app.get("/")
-async def home():
-    """代理服务主页"""
+async def root():
+    """服务首页"""
     return {
         "service": "教务系统代理服务",
-        "target": BASE_URL,
+        "status": "running",
+        "proxy_target": BASE_URL,
         "endpoints": {
-            "proxy": "/proxy/{path} - 通用代理",
-            "fetch": "/fetch?url={path} - 获取页面",
-            "api": "/api/{path} - API接口代理",
-            "static": "/resource?url={path} - 静态资源",
-            "analyze": "/analyze - 网站分析",
-            "health": "/health - 健康检查"
-        }
+            "GET /health": "健康检查",
+            "GET /proxy/{path}": "通用代理接口",
+            "GET /api/{path}": "API代理接口",
+            "GET /fetch": "获取页面内容",
+            "GET /analyze": "分析网站结构"
+        },
+        "docs": "/docs"
     }
 
-# 3. 通用代理接口
-@app.api_route("/proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_all(path: str, request: Request):
-    """通用代理接口，支持所有HTTP方法"""
+# 2. 健康检查（Railway必须）
+@app.get("/health")
+async def health():
+    """健康检查接口"""
+    return {
+        "status": "healthy",
+        "timestamp": asyncio.get_event_loop().time(),
+        "service": "edu-proxy"
+    }
+
+# 3. 核心代理接口
+@app.api_route("/proxy/{path:path}", methods=["GET", "POST"])
+async def proxy_handler(
+    path: str,
+    request: Request,
+    action: Optional[str] = Query(None),
+    oper: Optional[str] = Query(None)
+):
+    """
+    通用代理处理器
+    path: 目标路径，如：xkglAction.do
+    action/oper: 教务系统常用参数
+    """
     try:
         # 构建目标URL
         target_url = urljoin(BASE_URL, path)
         
-        # 获取查询参数
+        # 处理查询参数
         query_params = dict(request.query_params)
         
-        # 准备请求头
-        headers = {}
-        exclude_headers = ['host', 'content-length', 'connection', 'accept-encoding']
-        for key, value in request.headers.items():
-            key_lower = key.lower()
-            if key_lower not in exclude_headers:
-                headers[key] = value
-        
-        # 处理请求体
+        # 处理POST数据
         body = None
-        content_type = request.headers.get('content-type', '')
-        if request.method in ["POST", "PUT", "PATCH"]:
-            if content_type:
-                if 'application/json' in content_type:
-                    body = await request.json()
-                elif 'application/x-www-form-urlencoded' in content_type:
-                    form_data = await request.form()
-                    body = dict(form_data)
-                elif 'multipart/form-data' in content_type:
-                    form_data = await request.form()
-                    body = dict(form_data)
-                else:
-                    body = await request.body()
+        if request.method == "POST":
+            content_type = request.headers.get("content-type", "")
+            if "application/json" in content_type:
+                body = await request.json()
+            elif "application/x-www-form-urlencoded" in content_type:
+                form_data = await request.form()
+                body = dict(form_data)
+            else:
+                body = await request.body()
         
-        client = await get_http_client()
+        # 获取HTTP客户端
+        client = await HttpClient.get_client()
         
         # 发送请求
         response = await client.request(
             method=request.method,
             url=target_url,
             params=query_params,
-            headers=headers,
-            json=body if isinstance(body, dict) and 'application/json' in content_type else None,
-            data=body if isinstance(body, (dict, str)) and 'application/json' not in content_type else None,
+            json=body if isinstance(body, dict) else None,
+            data=body if isinstance(body, (dict, str)) else None,
             content=body if isinstance(body, bytes) else None
         )
         
-        # 处理响应
+        # 返回响应
         response_headers = dict(response.headers)
         
-        # 移除一些不需要的头部
-        response_headers.pop('content-encoding', None)
-        response_headers.pop('transfer-encoding', None)
+        # 移除不需要的头部
+        for key in ["content-encoding", "transfer-encoding"]:
+            response_headers.pop(key, None)
         
         return Response(
             content=response.content,
@@ -198,230 +153,164 @@ async def proxy_all(path: str, request: Request):
             headers=response_headers
         )
         
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"请求目标网站失败: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"代理请求失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"代理处理错误: {str(e)}")
 
-# 4. 简单的页面获取接口
+# 4. 简化版页面获取
 @app.get("/fetch")
 async def fetch_page(
-    url: str = Query(..., description="要获取的页面URL（相对或绝对路径）"),
-    use_cache: bool = Query(False, description="是否使用缓存"),
-    refresh: bool = Query(False, description="强制刷新缓存")
+    url: str = Query(..., description="要获取的URL路径"),
+    format: str = Query("json", description="返回格式: json 或 html")
 ):
-    """获取网页内容"""
+    """获取页面内容"""
     try:
         # 处理URL
-        if not url.startswith(('http://', 'https://')):
+        if not url.startswith("http"):
             target_url = urljoin(BASE_URL, url)
         else:
             target_url = url
         
-        # 检查缓存
-        if use_cache and not refresh:
-            cached = await get_cached_response(target_url)
-            if cached:
-                return JSONResponse(content=cached)
-        
-        client = await get_http_client()
+        client = await HttpClient.get_client()
         response = await client.get(target_url)
         
-        # 构建响应数据
-        result = {
+        if format == "html":
+            return HTMLResponse(content=response.text)
+        
+        return {
             "url": target_url,
             "status_code": response.status_code,
+            "content_length": len(response.content),
             "headers": dict(response.headers),
-            "content": response.text,
-            "timestamp": time.time()
+            "preview": response.text[:500] + "..." if len(response.text) > 500 else response.text
         }
         
-        # 保存缓存
-        if use_cache:
-            await save_cached_response(target_url, result)
-        
-        return JSONResponse(content=result)
-        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取页面失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# 5. API接口代理（专门处理JSON数据）
-@app.api_route("/api/{path:path}", methods=["GET", "POST"])
-async def api_proxy(path: str, request: Request):
-    """API接口代理"""
-    try:
-        target_url = urljoin(BASE_URL, path)
-        
-        client = await get_http_client()
-        
-        # 根据请求方法发送请求
-        if request.method == "GET":
-            query_params = dict(request.query_params)
-            response = await client.get(target_url, params=query_params)
-        else:
-            body = await request.json()
-            response = await client.post(target_url, json=body)
-        
-        # 尝试解析为JSON
-        try:
-            data = response.json()
-            return JSONResponse(content=data)
-        except:
-            return PlainTextResponse(content=response.text)
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"API代理失败: {str(e)}")
-
-# 6. 静态资源代理
-@app.get("/resource")
-async def proxy_resource(url: str = Query(...)):
-    """代理静态资源（CSS、JS、图片等）"""
-    try:
-        if not url.startswith(('http://', 'https://')):
-            target_url = urljoin(BASE_URL, url)
-        else:
-            target_url = url
-        
-        client = await get_http_client()
-        response = await client.get(target_url)
-        
-        # 确定Content-Type
-        content_type = response.headers.get('content-type', 'application/octet-stream')
-        
-        return Response(
-            content=response.content,
-            media_type=content_type,
-            headers={
-                'Cache-Control': 'public, max-age=86400'
-            }
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取资源失败: {str(e)}")
-
-# 7. 网站分析接口
+# 5. 网站结构分析
 @app.get("/analyze")
-async def analyze_site():
+async def analyze():
     """分析目标网站结构"""
     try:
-        client = await get_http_client()
+        client = await HttpClient.get_client()
         response = await client.get(BASE_URL)
+        
+        import re
+        from bs4 import BeautifulSoup
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 提取信息
+        # 基本信息
         result = {
             "base_url": BASE_URL,
             "title": soup.title.string if soup.title else "无标题",
-            "meta_tags": [],
-            "links": [],
-            "forms": [],
-            "scripts": [],
-            "stylesheets": []
+            "has_login_form": False,
+            "links_count": 0,
+            "forms_count": 0
         }
         
-        # 提取meta标签
-        for meta in soup.find_all('meta'):
-            meta_info = {attr: meta.get(attr) for attr in meta.attrs}
-            result["meta_tags"].append(meta_info)
+        # 查找登录表单
+        forms = soup.find_all('form')
+        result["forms_count"] = len(forms)
+        
+        for form in forms:
+            form_html = str(form).lower()
+            if any(keyword in form_html for keyword in ['login', 'logon', 'signin', 'password']):
+                result["has_login_form"] = True
+                result["login_action"] = form.get('action', '')
+                break
         
         # 提取链接
-        for link in soup.find_all('a', href=True):
-            href = link.get('href')
-            if href:
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if href and not href.startswith(('javascript:', '#')):
                 full_url = urljoin(BASE_URL, href)
-                result["links"].append({
-                    "text": link.get_text(strip=True),
+                links.append({
+                    "text": a.get_text(strip=True)[:50],
                     "href": href,
                     "full_url": full_url
                 })
         
-        # 提取表单
-        for form in soup.find_all('form'):
-            form_info = {
-                "action": form.get('action', ''),
-                "method": form.get('method', 'get').upper(),
-                "inputs": []
-            }
-            
-            for input_tag in form.find_all(['input', 'textarea', 'select']):
-                input_info = {
-                    "type": input_tag.get('type', input_tag.name),
-                    "name": input_tag.get('name', ''),
-                    "value": input_tag.get('value', ''),
-                    "placeholder": input_tag.get('placeholder', '')
-                }
-                form_info["inputs"].append(input_info)
-            
-            result["forms"].append(form_info)
+        result["links_count"] = len(links)
+        result["sample_links"] = links[:10]  # 只返回前10个
         
-        # 提取脚本
-        for script in soup.find_all('script', src=True):
-            src = script.get('src')
-            if src:
-                result["scripts"].append(urljoin(BASE_URL, src))
+        # 提取可能的API端点
+        patterns = [
+            r'(\w+Action\.do\??\w*=?\w*)',
+            r'(\w+\.action\??\w*=?\w*)',
+            r'(\w+\.jsp\??\w*=?\w*)',
+            r'(\w+\.aspx\??\w*=?\w*)'
+        ]
         
-        # 提取样式表
-        for link in soup.find_all('link', rel='stylesheet'):
-            href = link.get('href')
-            if href:
-                result["stylesheets"].append(urljoin(BASE_URL, href))
+        endpoints = set()
+        for pattern in patterns:
+            matches = re.findall(pattern, response.text)
+            endpoints.update(matches)
         
-        return JSONResponse(content=result)
+        result["endpoints"] = list(endpoints)[:20]  # 最多返回20个
+        
+        return result
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"分析网站失败: {str(e)}")
+        return {"error": str(e), "base_url": BASE_URL}
 
-# 8. 直接HTML渲染（用于浏览器访问）
-@app.get("/view/{path:path}")
-async def view_page(path: str, request: Request):
-    """直接在浏览器中查看页面（处理相对链接）"""
-    try:
-        target_url = urljoin(BASE_URL, path)
-        
-        client = await get_http_client()
-        response = await client.get(target_url)
-        
-        html_content = response.text
-        
-        # 修复相对链接（简单处理）
-        html_content = html_content.replace('href="/', f'href="/view/')
-        html_content = html_content.replace('src="/', f'src="/resource?url=/')
-        
-        return HTMLResponse(content=html_content)
-        
-    except Exception as e:
-        return HTMLResponse(f"""
-            <html>
-                <body>
-                    <h1>页面加载失败</h1>
-                    <p>错误: {str(e)}</p>
-                    <p>URL: {path}</p>
-                    <a href="/">返回首页</a>
-                </body>
-            </html>
-        """)
+# 6. 测试教务系统常用接口
+@app.get("/test/common")
+async def test_common_endpoints():
+    """测试教务系统常用接口"""
+    endpoints = [
+        "xkglAction.do?oper=xkgl_ckKb",      # 查看课表
+        "xkglAction.do?oper=xkgl_cxXsxk",    # 学生选课
+        "xsxkAction.do",                     # 学生选课主页面
+        "gradeLnAllAction.do",               # 成绩查询
+        "xsdjAction.do",                     # 学生登记
+        "xskbcxAction.do",                   # 学生课表查询
+    ]
+    
+    results = []
+    client = await HttpClient.get_client()
+    
+    for endpoint in endpoints[:3]:  # 只测试前3个避免超时
+        try:
+            url = urljoin(BASE_URL, endpoint)
+            response = await client.get(url, timeout=10.0)
+            results.append({
+                "endpoint": endpoint,
+                "status": response.status_code,
+                "size": len(response.content),
+                "title": BeautifulSoup(response.text, 'html.parser').title.string if BeautifulSoup(response.text, 'html.parser').title else "无标题"
+            })
+        except Exception as e:
+            results.append({
+                "endpoint": endpoint,
+                "status": "error",
+                "error": str(e)
+            })
+    
+    return {
+        "tested": len(results),
+        "results": results
+    }
 
 # 错误处理
 @app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
+async def not_found(request: Request, exc):
     return JSONResponse(
         status_code=404,
-        content={"error": "未找到", "path": request.url.path}
+        content={"error": "接口不存在", "path": request.url.path}
     )
 
-@app.exception_handler(500)
-async def server_error_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"error": "服务器内部错误", "detail": str(exc)}
-    )
-
-# 启动应用
+# 主程序入口
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
+    print(f"Starting server on port {port}")
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=port,
-        reload=False
+        workers=1  # Railway建议使用1个worker
     )
