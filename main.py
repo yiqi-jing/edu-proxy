@@ -13,7 +13,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"],1
 )
 
 BASE_URL = "http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/"
