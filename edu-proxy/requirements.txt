@@ -1,4 +1,4 @@
-fastapi==0.104.1
-uvicorn==0.24.0
-requests==2.31.0
-beautifulsoup4==4.12.2
+fastapi==0.100.0       # 兼容3.8的版本
+uvicorn[standard]==0.23.0
+requests==2.28.2
+beautifulsoup4==4.11.1

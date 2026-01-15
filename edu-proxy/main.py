@@ -1,17 +1,26 @@
 """
-最简单的教务系统代理服务器
-作者：新手友好版
-功能：获取公开的教务通知（无需登录测试）
+教务系统代理服务器 - Python 3.8兼容版
+确保在Python 3.8和Railway上都能正常运行
 """
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import requests
-from bs4 import BeautifulSoup
+import sys
+print(f"Python版本: {sys.version}")
+
+try:
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    import requests
+    from bs4 import BeautifulSoup
+    import uvicorn
+    print("✓ 所有依赖包导入成功")
+except ImportError as e:
+    print(f"✗ 导入失败: {e}")
+    print("请运行: pip install -r requirements.txt")
+    sys.exit(1)
 
 # 创建应用
-app = FastAPI(title="教务助手代理", version="1.0")
+app = FastAPI(title="教务代理", version="1.0")
 
-# 允许所有来源访问（方便测试）
+# 允许跨域（鸿蒙App需要）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,165 +29,109 @@ app.add_middleware(
 )
 
 @app.get("/")
-async def home():
+def home():
     """首页"""
     return {
-        "service": "教务助手代理服务",
+        "service": "教务系统代理API",
+        "python_version": sys.version.split()[0],
         "status": "运行正常",
         "endpoints": {
-            "/test": "测试连接",
-            "/news": "获取教务新闻",
-            "/schedule?username=学号&password=密码": "获取课表（需登录）"
+            "/test": "测试教务网站连接",
+            "/simple": "简单数据接口"
         }
     }
 
 @app.get("/test")
-async def test_connection():
+def test_connection():
     """测试是否能访问教务网站"""
     try:
         url = "http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/"
+        # 使用较短的超时时间
         response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             return {
                 "success": True,
                 "message": "可以访问教务网站",
-                "status_code": response.status_code
+                "status_code": response.status_code,
+                "content_length": len(response.text)
             }
         else:
             return {
                 "success": False,
-                "message": f"网站返回状态码：{response.status_code}",
+                "message": f"网站返回 {response.status_code}",
                 "status_code": response.status_code
             }
     except Exception as e:
         return {
             "success": False,
-            "message": f"连接失败：{str(e)}"
+            "message": f"连接失败: {str(e)[:100]}",  # 只显示前100字符
+            "error_type": type(e).__name__
         }
 
-@app.get("/news")
-async def get_news():
-    """获取教务网站首页的新闻通知（公开内容）"""
+@app.get("/simple")
+def simple_data():
+    """返回简单数据（用于测试API是否工作）"""
+    return {
+        "success": True,
+        "data": {
+            "courses": [
+                {"name": "测试课程1", "time": "周一 1-2节", "location": "A101"},
+                {"name": "测试课程2", "time": "周二 3-4节", "location": "B202"}
+            ],
+            "notices": [
+                {"title": "测试通知1", "date": "2024-01-15"},
+                {"title": "测试通知2", "date": "2024-01-16"}
+            ]
+        },
+        "note": "这是测试数据，实际数据需要连接教务系统获取"
+    }
+
+@app.get("/check-website")
+def check_website_structure():
+    """查看网站结构（用于调试）"""
     try:
         url = "http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, timeout=15)
         
         if response.status_code == 200:
-            # 使用BeautifulSoup解析HTML
+            # 使用BeautifulSoup解析
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 尝试查找新闻列表（需要根据实际网页调整）
-            news_items = []
-            
-            # 方法1：查找所有链接
-            for link in soup.find_all('a', href=True)[:10]:  # 取前10个
-                text = link.get_text(strip=True)
-                if text and len(text) > 5:  # 过滤太短的文本
-                    news_items.append({
-                        "title": text,
-                        "url": link['href'] if link['href'].startswith('http') 
-                               else f"http://qzjw.bwgl.cn{link['href']}"
-                    })
-            
-            # 如果没找到，尝试其他选择器
-            if not news_items:
-                # 查找可能有新闻的div
-                for div in soup.find_all('div', class_=True):
-                    if 'news' in div.get('class', []) or 'notice' in div.get('class', []):
-                        news_items.append({
-                            "title": div.get_text(strip=True)[:100],
-                            "source": "div元素"
-                        })
+            # 收集基本信息
+            info = {
+                "title": str(soup.title)[:100] if soup.title else "无标题",
+                "forms_count": len(soup.find_all('form')),
+                "tables_count": len(soup.find_all('table')),
+                "has_login_form": any('login' in str(form).lower() or 
+                                     '密码' in str(form) or 
+                                     'user' in str(form).lower() 
+                                     for form in soup.find_all('form')),
+                "sample_html": response.text[:500]  # 前500字符
+            }
             
             return {
                 "success": True,
-                "data": news_items[:5],  # 只返回前5条
-                "total_found": len(news_items),
-                "hint": "这是公开内容测试，如需课表需要登录功能"
+                "website_info": info,
+                "tip": "根据这些信息可以设计登录逻辑"
             }
         else:
             return {
                 "success": False,
-                "error": f"获取网页失败，状态码：{response.status_code}"
+                "error": f"HTTP {response.status_code}"
             }
             
     except Exception as e:
         return {
             "success": False,
-            "error": f"解析失败：{str(e)}",
-            "tip": "可能需要调整解析规则"
-        }
-
-@app.get("/check-structure")
-async def check_page_structure():
-    """查看网页结构，帮助调整解析规则"""
-    try:
-        url = "http://qzjw.bwgl.cn/gllgdxbwglxy_jsxsd/"
-        response = requests.get(url, timeout=10)
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 收集页面结构信息
-        structure = {
-            "title": soup.title.string if soup.title else "无标题",
-            "forms": [],
-            "tables": [],
-            "common_classes": [],
-            "common_ids": []
-        }
-        
-        # 查找表单
-        for form in soup.find_all('form'):
-            structure["forms"].append({
-                "action": form.get('action', '无'),
-                "id": form.get('id', '无'),
-                "class": form.get('class', [])
-            })
-        
-        # 查找表格
-        for table in soup.find_all('table'):
-            structure["tables"].append({
-                "id": table.get('id', '无'),
-                "class": table.get('class', []),
-                "rows": len(table.find_all('tr'))
-            })
-        
-        # 统计常见的class
-        class_counter = {}
-        for tag in soup.find_all(class_=True):
-            for cls in tag['class']:
-                class_counter[cls] = class_counter.get(cls, 0) + 1
-        
-        # 取出现次数最多的10个class
-        structure["common_classes"] = sorted(
-            class_counter.items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )[:10]
-        
-        return {
-            "success": True,
-            "structure": structure,
-            "tip": "根据这些信息调整news接口的解析规则"
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
+            "error": str(e)[:200]
         }
 
 if __name__ == "__main__":
-    import uvicorn
     print("=" * 50)
     print("教务代理服务器启动")
-    print("访问地址：http://localhost:8000")
-    print("测试接口：http://localhost:8000/test")
-    print("获取新闻：http://localhost:8000/news")
+    print(f"Python版本: {sys.version}")
+    print("访问地址: http://localhost:8000")
+    print("测试接口: http://localhost:8000/test")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000)
